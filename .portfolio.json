@@ -1,0 +1,15 @@
+{
+  "name": "Project Switcher",
+  "status": "Live",
+  "url": "https://github.com/martinindalecio/project-switcher",
+  "year": "2026",
+  "tags": [
+    "Claude Code",
+    "Plugin",
+    "Developer Tools"
+  ],
+  "description": {
+    "en": "A Claude Code plugin that lists every project and its sessions in a side pane, shows each session's context-window fill, and resumes any session in Claude Desktop, Terminal or iTerm with one click.",
+    "es": "Un plugin de Claude Code que lista todos tus proyectos y sus sesiones en un panel lateral, muestra cuánto contexto usa cada sesión y retoma cualquiera en Claude Desktop, Terminal o iTerm con un clic."
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "name": "project-switcher",
+  "version": "0.2.0",
+  "description": "Pane listing every project and its sessions with context-window fill; resume any session in Claude Desktop, Terminal or iTerm",
+  "author": { "name": "Martin Galaz" },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "openIn": {
+      "type": "string",
+      "title": "Open sessions in",
+      "description": "Where a session resumes when you press it: the Claude Desktop app, or `claude --resume` in Terminal or iTerm",
+      "options": ["desktop", "terminal", "iterm"],
+      "default": "desktop"
+    },
+    "autoOpen": {
+      "type": "boolean",
+      "title": "Open the pane when a session starts",
+      "description": "Off: the pane opens only on /projects",
+      "default": false
+    },
+    "sessionsPerProject": {
+      "type": "number",
+      "title": "Sessions shown per project",
+      "description": "Rows before \"+N more\"",
+      "default": 3
+    },
+    "projectsShown": {
+      "type": "number",
+      "title": "Projects shown",
+      "description": "Projects listed before \"Show N more projects\"",
+      "default": 8
+    },
+    "warnAt": {
+      "type": "number",
+      "title": "Context warning at (%)",
+      "description": "Fill at which a session turns yellow",
+      "default": 60
+    },
+    "dangerAt": {
+      "type": "number",
+      "title": "Context danger at (%)",
+      "description": "Fill at which a session turns red and counts as near limit",
+      "default": 75
+    }
+  }
+}

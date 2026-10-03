@@ -1,0 +1,75 @@
+# Copy this file to .github/workflows/portfolio-sync.yml in any project repo.
+#
+# Required GitHub secrets (Settings → Secrets → Actions):
+#   AIRTABLE_TOKEN   — Airtable personal access token (scopes: data.records:read, data.records:write)
+#   AIRTABLE_BASE_ID — The ID of your portfolio Airtable base (starts with "app...")
+#
+# The workflow triggers when .portfolio.json changes on main, or manually.
+# Remove the `paths` filter if you want it to sync on every push.
+
+name: Sync to Portfolio
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.portfolio.json'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync to Airtable
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+        run: |
+          python3 << 'PYEOF'
+          import json, os, urllib.request, urllib.error, sys
+
+          with open('.portfolio.json') as f:
+              p = json.load(f)
+
+          fields = {
+              "name":           p["name"],
+              "status":         p.get("status", "Prototype"),
+              "year":           p.get("year", ""),
+              "description_en": p.get("description", {}).get("en", ""),
+              "description_es": p.get("description", {}).get("es", ""),
+          }
+          if p.get("url"):
+              fields["url"] = p["url"]
+
+          payload = {
+              "performUpsert": {"fieldsToMergeOn": ["name"]},
+              "records": [{"fields": fields}],
+          }
+
+          base_id = os.environ["AIRTABLE_BASE_ID"]
+          token   = os.environ["AIRTABLE_TOKEN"]
+          url     = f"https://api.airtable.com/v0/{base_id}/Projects"
+
+          req = urllib.request.Request(
+              url,
+              data=json.dumps(payload).encode(),
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Content-Type": "application/json",
+              },
+              method="PATCH",
+          )
+
+          try:
+              with urllib.request.urlopen(req) as res:
+                  result  = json.loads(res.read())
+                  created = result.get("createdRecords", [])
+                  updated = result.get("updatedRecords", [])
+                  action  = "Created" if created else "Updated"
+                  print(f"✅ {action}: {p['name']}")
+          except urllib.error.HTTPError as e:
+              print(f"❌ Airtable error {e.code}: {e.read().decode()}", file=sys.stderr)
+              sys.exit(1)
+          PYEOF
