@@ -13,6 +13,10 @@ const error = atom({ plugin: 'project-switcher', key: 'error' } as const, null a
 const showAll = atom({ plugin: 'project-switcher', key: 'showAll' } as const, [] as string[])
 const showAllProjects = atom({ plugin: 'project-switcher', key: 'showAllProjects' } as const, false)
 const settingsOpen = atom({ plugin: 'project-switcher', key: 'settingsOpen' } as const, false)
+// whether this session draws the pane now; the launcher above the prompt shows while it doesn't
+const paneUp = atom({ plugin: 'project-switcher', key: 'paneUp' } as const, false)
+// kept across sessions in $.store: true from an open the person asked for until they close the pane by hand
+const WANTED = 'paneWanted'
 
 const BAR = 8
 
@@ -20,6 +24,7 @@ type OpenIn = 'desktop' | 'terminal' | 'iterm'
 type Settings = {
   openIn: OpenIn
   autoOpen: boolean
+  launcher: boolean
   rowsPerProject: number
   projectsShown: number
   warn: number
@@ -35,6 +40,7 @@ function settingsOf(options: PluginOptions): Settings {
   return {
     openIn,
     autoOpen: options.autoOpen === true,
+    launcher: options.showLauncher !== false,
     rowsPerProject: num(options.sessionsPerProject, 3, 1, 20),
     projectsShown: num(options.projectsShown, 8, 1, 100),
     warn,
@@ -149,13 +155,31 @@ async function rescan($: EngineInterface): Promise<void> {
   await setError($, null)
 }
 
+// An open the person asked for (/projects, the launcher): placed at any width, and remembered for other sessions.
 async function openPane($: EngineInterface): Promise<string> {
   const before = await $.ui.panes()
   const stale = before.find(p => p.id === PANE && !p.isPlaced)
   if (stale) await $.ui.close({ id: PANE })
   const result = await $.ui.open({ id: PANE, title: TITLE })
-  $.ui.log(`open: ${JSON.stringify(result)} before=${JSON.stringify(before)} after=${JSON.stringify(await $.ui.panes())}`, { to: 'debug' })
+  await update($, paneUp, () => result.isPlaced)
+  await $.store.set(WANTED, true)
+  $.ui.log(`open: ${JSON.stringify(result)} before=${JSON.stringify(before)}`, { to: 'debug' })
   return result.isPlaced ? 'Projects pane opened.' : `Projects pane not placed: ${result.reason}`
+}
+
+// Reopens the pane in a session that starts or that a surface attaches to (switching sessions in Desktop),
+// when the person left it open elsewhere or turned on auto-open. Unasked, so a narrow window may hold it undrawn.
+async function restorePane($: EngineInterface): Promise<void> {
+  const mine = (await $.ui.panes()).find(p => p.id === PANE)
+  if (mine) {
+    await update($, paneUp, () => mine.isPlaced)
+    return
+  }
+  if (!cfg.autoOpen && (await $.store.get(WANTED)) !== true) return
+  const result = await $.ui.open({ id: PANE, title: TITLE })
+  await update($, paneUp, () => result.isPlaced)
+  $.ui.log(`restore: ${JSON.stringify(result)}`, { to: 'debug' })
+  if (result.isPlaced) void rescan($)
 }
 
 export const register: Register = (on, options) => {
@@ -164,8 +188,9 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     await $.command.register({ name: 'projects', description: 'Show all projects and sessions with context fill' })
-    // off by default: opening unasked in every session made the pane reappear after a close
-    if (cfg.autoOpen) void openPane($)
+    // a terminal session shows the pane inline, over the transcript, so it reopens there only with auto-open on;
+    // a Desktop session (no surface yet at start) gets it docked beside the transcript
+    if (e.surface !== 'terminal' || cfg.autoOpen) void restorePane($)
 
     // The scanner prints a snapshot at start and whenever a session's message ends.
     void (async () => {
@@ -203,9 +228,50 @@ export const register: Register = (on, options) => {
     return { text }
   })
 
+  // a Desktop session switch attaches the app to this session: seat the pane there too
+  on('session.attach', async ($, e, next) => {
+    const done = await next(e)
+    if (e.surface !== 'mobile' && e.viewport?.isFullscreen !== false) void restorePane($)
+    return done
+  })
+
   on('ui.close', async ($, e, next) => {
-    if (e.id === PANE) $.ui.log(`close: origin=${e.origin}`, { to: 'debug' })
-    return next(e)
+    if (e.id !== PANE) return next(e)
+    $.ui.log(`close: origin=${e.origin.kind}`, { to: 'debug' })
+    const done = await next(e)
+    // a hook beneath may have kept it open
+    if ((await $.ui.panes()).some(p => p.id === PANE)) return done
+    await update($, paneUp, () => false)
+    // closed by hand: stop reopening it in other sessions
+    if (e.origin.kind === 'person') await $.store.set(WANTED, false)
+    return done
+  })
+
+  // the launcher: one press opens the pane, so it needs no command
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (!cfg.launcher || e.props.hasSurvey) return next(e)
+    // the engine's record catches a pane placed later (a widened terminal, a surface attaching); the flag is the fallback
+    let isUp = await read($, paneUp)
+    try {
+      isUp = (await $.ui.panes()).some(p => p.id === PANE && p.isPlaced)
+    } catch {}
+    if (isUp) return next(e)
+    // what draws beneath (another plugin's band) stays, under the launcher
+    const below = await next(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const snap = await read($, snapshot)
+    const rows = snap ? snap.projects.flatMap(visible).filter(s => s.isOpen) : []
+    const near = rows.filter(s => pctOf(s) >= cfg.danger).length
+    return (
+      <Box flexDirection="column">
+        <Box flexDirection="row">
+          <Button key="launch" plain label="▤ Projects" onPress={async () => { await openPane($); void rescan($) }} />
+          {snap && <Text dimColor>{` · ${rows.length} open`}</Text>}
+          {near > 0 && <Text color="red">{` · ${near} near limit`}</Text>}
+        </Box>
+        {below}
+      </Box>
+    )
   })
 
   // this session's own message ending: refresh at once rather than waiting on the scanner's tick
@@ -312,7 +378,6 @@ export const register: Register = (on, options) => {
             <Button
               key={`set-open-${where}`}
               plain
-              bold={cfg.openIn === where}
               dimColor={cfg.openIn !== where}
               label={`${cfg.openIn === where ? '◉' : '○'} ${APP_NAME[where]} `}
               onPress={() => setOption($, 'openIn', where)}
@@ -322,6 +387,10 @@ export const register: Register = (on, options) => {
         <Box flexDirection="row" paddingLeft={2}>
           <Text dimColor>{'Open pane on start '}</Text>
           <Button key="set-auto" plain label={cfg.autoOpen ? '◉ on' : '○ off'} onPress={() => setOption($, 'autoOpen', !cfg.autoOpen)} />
+        </Box>
+        <Box flexDirection="row" paddingLeft={2}>
+          <Text dimColor>{'Launcher above prompt '}</Text>
+          <Button key="set-launcher" plain label={cfg.launcher ? '◉ on' : '○ off'} onPress={() => setOption($, 'showLauncher', !cfg.launcher)} />
         </Box>
         {stepper('set-rows', 'Sessions per project', cfg.rowsPerProject, 1, 'sessionsPerProject', 1, 20)}
         {stepper('set-projects', 'Projects shown', cfg.projectsShown, 1, 'projectsShown', 1, 100)}

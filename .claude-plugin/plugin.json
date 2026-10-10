@@ -1,8 +1,10 @@
 {
   "name": "project-switcher",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Pane listing every project and its sessions with context-window fill; resume any session in Claude Desktop, Terminal or iTerm",
-  "author": { "name": "Martin Galaz" },
+  "author": {
+    "name": "Martin Galaz"
+  },
   "license": "MIT",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -10,14 +12,24 @@
       "type": "string",
       "title": "Open sessions in",
       "description": "Where a session resumes when you press it: the Claude Desktop app, or `claude --resume` in Terminal or iTerm",
-      "options": ["desktop", "terminal", "iterm"],
+      "options": [
+        "desktop",
+        "terminal",
+        "iterm"
+      ],
       "default": "desktop"
     },
     "autoOpen": {
       "type": "boolean",
       "title": "Open the pane when a session starts",
-      "description": "Off: the pane opens only on /projects",
+      "description": "On: the pane opens in every new session. Off: it reopens only while you left it open",
       "default": false
+    },
+    "showLauncher": {
+      "type": "boolean",
+      "title": "Launcher above the prompt",
+      "description": "A ▤ Projects button above the prompt while the pane is closed",
+      "default": true
     },
     "sessionsPerProject": {
       "type": "number",

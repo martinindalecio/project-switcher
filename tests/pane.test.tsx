@@ -54,7 +54,7 @@ test('settings change the limits', { options: { sessionsPerProject: 1, projectsS
 
 test('pressing a session opens it where the setting says', async ($, on) => {
   const ran: string[][] = []
-  on('process.run', async (_$, e) => { ran.push([...e.argv]); return { value: { exitCode: 0, stdout: '', stderr: '' } } })
+  on('process.run', async (_$, e) => { ran.push([...e.argv]); return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } } })
   on('state.get', async (_$, e, next) =>
     e.plugin === 'project-switcher' && e.key === 'snapshot' ? { value: { value: SNAP, version: 1 } } : next(e))
   const ui = await $.ui.mount({
@@ -71,7 +71,7 @@ test('pressing a session opens it where the setting says', async ($, on) => {
 
 test('openIn terminal resumes with claude --resume in Terminal', { options: { openIn: 'terminal' } }, async ($, on) => {
   const ran: string[][] = []
-  on('process.run', async (_$, e) => { ran.push([...e.argv]); return { value: { exitCode: 0, stdout: '', stderr: '' } } })
+  on('process.run', async (_$, e) => { ran.push([...e.argv]); return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } } })
   on('state.get', async (_$, e, next) =>
     e.plugin === 'project-switcher' && e.key === 'snapshot' ? { value: { value: SNAP, version: 1 } } : next(e))
   const ui = await $.ui.mount({
@@ -89,7 +89,7 @@ test('the settings section writes userConfig through $.config.set', async ($, on
   on('config.set', async (_$, e) => { sets.push([e.key, e.value]); return { value: e.value } })
   // stands for the menu: one row per userConfig field, keyed as the engine keys a plugin's fields
   on('config.list', async () => ({
-    value: ['openIn', 'autoOpen', 'sessionsPerProject', 'projectsShown', 'warnAt', 'dangerAt']
+    value: ['openIn', 'autoOpen', 'showLauncher', 'sessionsPerProject', 'projectsShown', 'warnAt', 'dangerAt']
       .map(f => ({ key: `project-switcher.${f}`, label: f })) as never,
   }))
   on('state.get', async (_$, e, next) =>
@@ -109,3 +109,114 @@ test('the settings section writes userConfig through $.config.set', async ($, on
   expect(sets[0]).toEqual([expect.stringMatching(/^project-switcher.*\.openIn$/), 'terminal'])
   expect(sets[1]).toEqual([expect.stringMatching(/^project-switcher.*\.sessionsPerProject$/), 4])
 })
+
+// ---- launcher above the prompt, and the pane remembered across sessions ----
+
+const SURFACES = ['terminal', 'desktop'] as const
+const mountLauncher = ($: any, surface: 'terminal' | 'desktop') =>
+  $.ui.mount({
+    plugin: 'project-switcher', surface, component: 'AbovePrompt', requestId: 'launcher',
+    props: { hasSurvey: false } as never,
+  })
+
+// stands for the engine's store and state: store.get/set go to a map, state.get answers paneUp
+function stubEngine(on: any, opts: { wanted?: unknown } = {}) {
+  const store = new Map<string, unknown>()
+  if (opts.wanted !== undefined) store.set('paneWanted', opts.wanted)
+  const opened: unknown[] = []
+  const closed: unknown[] = []
+  on('store.get', async (_$: any, e: any) => ({ value: store.get(e.key) }))
+  on('store.set', async (_$: any, e: any) => { store.set(e.key, e.value); return { value: undefined } })
+  on('ui.log', async () => ({ value: undefined }))
+  on('session.start', async (_$: any, e: any) => ({ cwd: e.cwd }))
+  on('session.attach', async (_$: any, e: any) => ({ clientId: e.clientId }))
+  on('session.usage', async () => ({ value: { context: { window: 200_000 } } as never }))
+  on('session.id', async () => ({ value: 'test-session' }))
+  on('command.register', async () => ({ value: undefined }))
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: JSON.stringify(SNAP), stderr: '' } }))
+  // the engine's record of panes: an open places it, a close takes it away
+  const panes = new Map<string, unknown>()
+  on('ui.panes', async () => ({ value: [...panes.values()] }))
+  on('ui.open', async (_$: any, e: any) => {
+    opened.push(e)
+    panes.set(e.id, { id: e.id, title: e.title, isShown: true, isFocused: false, isPlaced: true })
+    return { value: { isPlaced: true } }
+  })
+  on('ui.close', async (_$: any, e: any) => { closed.push(e); panes.delete(e.id); return { value: undefined } })
+  // stands for the engine's own drawing, which a pass-through falls to
+  on('ui.render', async () => ({ type: 'Text', props: {}, children: ['stock'] } as never))
+  on('state.get', async (_$: any, e: any, next: any) => {
+    if (e.plugin !== 'project-switcher') return next(e)
+    if (e.key === 'snapshot') return { value: { value: SNAP, version: 1 } }
+    return next(e)
+  })
+  return { store, opened, closed, panes }
+}
+
+for (const surface of SURFACES) {
+  test(`the launcher draws while the pane is closed (${surface})`, async ($, on) => {
+    stubEngine(on)
+    const ui = await mountLauncher($, surface)
+    expect((await ui.find({ key: 'launch' }))?.props.label).toBe('▤ Projects')
+    await ui.unmount()
+  })
+
+  test(`the launcher goes once the pane is up (${surface})`, async ($, on) => {
+    stubEngine(on)
+    const first = await mountLauncher($, surface)
+    await first.press({ key: 'launch' })   // ui.open answers placed: paneUp turns true
+    await first.unmount()
+    const ui = await mountLauncher($, surface)
+    expect(await ui.find({ key: 'launch' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test(`showLauncher false removes the launcher (${surface})`, { options: { showLauncher: false } }, async ($, on) => {
+    stubEngine(on)
+    const ui = await mountLauncher($, surface)
+    expect(await ui.find({ key: 'launch' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test(`pressing the launcher remembers the pane and opens it (${surface})`, async ($, on) => {
+    const { store, opened } = stubEngine(on)
+    expect(store.get('paneWanted')).toBeUndefined()
+    const ui = await mountLauncher($, surface)
+    await ui.press({ key: 'launch' })
+    expect(store.get('paneWanted')).toBe(true)
+    expect(opened).toEqual([expect.objectContaining({ id: 'project-switcher' })])
+    await ui.unmount()
+  })
+}
+
+// restorePane runs unawaited from the hook: let it and its engine calls settle
+const settle = async () => { for (let i = 0; i < 20; i++) await new Promise(r => (globalThis as any).setTimeout(r, 0)) }
+
+test('session.start and session.attach reopen the pane only when it was left open', async ($, on) => {
+  const { opened, panes } = stubEngine(on, { wanted: true })
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as never)
+  await settle()
+  expect(opened.length).toBe(1)
+  expect(opened[0]).toEqual(expect.objectContaining({ id: 'project-switcher' }))
+  opened.length = 0
+  // a pane still up is left alone
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default', viewport: { isFullscreen: true } } as never)
+  await settle()
+  expect(opened.length).toBe(0)
+  // a switch that took it away gets it back
+  panes.clear()
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default', viewport: { isFullscreen: true } } as never)
+  await settle()
+  expect(opened.length).toBe(1)
+})
+
+for (const wanted of [false, undefined]) {
+  test(`session.start and session.attach leave the pane shut when paneWanted is ${wanted}`, async ($, on) => {
+    const { opened } = stubEngine(on, { wanted })
+    await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as never)
+    await $.session.attach({ surface: 'desktop', clientId: 'desktop:default', viewport: { isFullscreen: true } } as never)
+    await settle()
+    expect(opened.length).toBe(0)
+  })
+}
+

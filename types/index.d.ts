@@ -32,6 +32,7 @@ declare module 'claude-code' {
       showAll: string[]
       showAllProjects: boolean
       settingsOpen: boolean
+      paneUp: boolean
     }
   }
 }

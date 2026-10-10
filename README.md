@@ -78,7 +78,9 @@ Start a **new** session after installing or updating. Desktop sessions do not re
 
 ## Use
 
-Type `/projects` to open the pane and rescan.
+Click **▤ Projects** above the prompt, or type `/projects`, to open the pane and rescan.
+
+The pane follows you: once you open it, every other session you start or switch to in Claude Desktop opens it too. It stops when you close it by hand. The `▤ Projects` launcher shows only while the pane is closed.
 
 - Click a project name to fold it or unfold it.
 - `+N more` shows the rest of that project's recent sessions.
@@ -102,7 +104,8 @@ Change them from the pane's `⚙` section, or from `/config` in the terminal CLI
 | Setting | Default | What it does |
 | --- | --- | --- |
 | Open sessions in | `desktop` | `desktop`, `terminal` or `iterm` |
-| Open the pane when a session starts | off | When off, the pane opens only on `/projects` |
+| Open the pane when a session starts | off | When on, it opens in every new session. When off, it reopens only while you left it open |
+| Launcher above the prompt | on | Shows a `▤ Projects` button while the pane is closed |
 | Sessions shown per project | 3 | Rows shown before `+N more` |
 | Projects shown | 8 | Projects listed before `Show N more projects` |
 | Context warning at | 60% | Fill at which a session turns yellow |
