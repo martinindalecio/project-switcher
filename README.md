@@ -139,7 +139,7 @@ The values are stored in `~/.claude/settings.json` under `pluginConfigs`.
 
 Context fill is the last assistant message's input and cache tokens divided by the model's window. The window is 1M for `[1m]` models; otherwise it is the window learned from your own sessions (kept across sessions); otherwise 200k, shown as an estimate with `~`. Anything over 200k is treated as 1M.
 
-The background scanner (`scan.py watch`) runs only while the pane is open. Otherwise the launcher's counts come from a single scan when a session starts and after each turn, at most once every 30 seconds. Only transcripts named with a session UUID are read, and a session id is checked again before it is used in a command.
+The background scanner (`scan.py watch`) runs only while the pane is open in a session a window is showing. Switching away from a session in Desktop stops its scanner, and switching back starts it again. Otherwise the launcher's counts come from a single scan when a session starts and after each turn, at most once every 30 seconds. Only transcripts named with a session UUID are read, and a session id is checked again before it is used in a command.
 
 ## Known limitations
 

@@ -420,6 +420,15 @@ export const register: Register = (on, options) => {
     return done
   })
 
+  // switched away in Desktop: nothing draws the pane here, so the watcher waits for the next attach
+  on('session.detach', async ($, e, next) => {
+    const done = await next(e)
+    const left = (await $.session.surfaces()).filter(s => s !== 'mobile')
+    $.ui.log(`detach: ${e.surface} reason=${e.reason} left=${JSON.stringify(left)}`, { to: 'debug' })
+    if (left.length === 0) stopWatch()
+    return done
+  })
+
   on('ui.close', async ($, e, next) => {
     if (e.id !== PANE) return next(e)
     $.ui.log(`close: origin=${e.origin.kind}`, { to: 'debug' })

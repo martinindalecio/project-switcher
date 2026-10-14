@@ -356,6 +356,8 @@ test('the watcher runs only while the pane is up', async ($, on) => {
   const { ran } = stubEngine(on)
   const clock = mock.clock(on, { now })
   const { spawned, live } = stubWatch(on, clock)
+  on('session.detach', async (_$: any, e: any) => ({ clientId: e.clientId }))
+  on('session.surfaces', async () => ({ value: [] }))
   // a session start scans once for the band; it starts no watcher
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as never)
   await settle()
@@ -370,5 +372,11 @@ test('the watcher runs only while the pane is up', async ($, on) => {
   expect(spawned[0]).toContain('watch')
   expect(live.count).toBe(1)
   // stopping on close needs a live check: the test kit cannot raise ui.close
+  // switching away in Desktop (the last surface detaches) ends it
+  await $.session.detach({ surface: 'desktop', clientId: 'desktop:default', reason: 'detach' } as never)
+  await clock.advance(1_000)
+  await settle()
+  expect(live.count).toBe(0)
+  expect(spawned.length).toBe(1)
 })
 
