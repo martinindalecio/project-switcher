@@ -10,20 +10,29 @@ one each time a transcript's last entry becomes a finished assistant message
 """
 import json, os, re, subprocess, sys, time
 
-ROOT = os.path.expanduser("~/.claude/projects")
+ROOT = os.environ.get("PROJECT_SWITCHER_ROOT") or os.path.expanduser("~/.claude/projects")
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 PER_PROJECT = 5
 TAIL = 512 * 1024
 HEAD = 64 * 1024
 
 
 def args():
-    a = {"mode": sys.argv[1] if len(sys.argv) > 1 else "once", "self": "", "window": 0, "per": PER_PROJECT}
+    a = {"mode": sys.argv[1] if len(sys.argv) > 1 else "once", "self": "", "window": 0, "per": PER_PROJECT, "windows": {}}
     it = iter(sys.argv[2:])
     for k in it:
         if k == "--self": a["self"] = next(it, "")
         elif k == "--self-window": a["window"] = int(next(it, "0") or 0)
+        elif k == "--windows": a["windows"] = parse_windows(next(it, ""))
         elif k == "--per-project": a["per"] = max(1, int(next(it, "0") or PER_PROJECT))
     return a
+
+
+def parse_windows(raw):
+    try: d = json.loads(raw or "{}")
+    except Exception: return {}
+    if not isinstance(d, dict): return {}
+    return {k: v for k, v in d.items() if isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool) and v > 0}
 
 
 def lines_of(path, start, size):
@@ -47,14 +56,18 @@ def text_of(msg):
 
 
 def read_session(path):
-    size = os.path.getsize(path)
-    tail = lines_of(path, max(0, size - TAIL), TAIL)
+    try:
+        size = os.path.getsize(path)
+        tail = lines_of(path, max(0, size - TAIL), TAIL)
+    except OSError:
+        return None  # file vanished
+    custom = ai = None
     s = {"tokens": None, "model": None, "title": None, "cwd": None, "ended": False}
     for d in reversed(tail):
         t = d.get("type")
         if s["cwd"] is None and d.get("cwd"): s["cwd"] = d["cwd"]
-        if s["title"] is None and t == "custom-title": s["title"] = d.get("customTitle")
-        if s["title"] is None and t == "ai-title": s["title"] = d.get("aiTitle") or d.get("title")
+        if custom is None and t == "custom-title": custom = d.get("customTitle") or None
+        if ai is None and t == "ai-title": ai = d.get("aiTitle") or d.get("title") or None
         if s["tokens"] is None and t == "assistant" and not d.get("isSidechain"):
             m = d.get("message") or {}
             u = m.get("usage") or {}
@@ -62,6 +75,7 @@ def read_session(path):
                 s["tokens"] = (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
                                + u.get("cache_creation_input_tokens", 0))
                 s["model"] = m.get("model")
+    s["title"] = custom or ai
     # last real message: did the assistant finish its turn?
     for d in reversed(tail):
         if d.get("type") in ("user", "assistant") and not d.get("isSidechain"):
@@ -73,7 +87,9 @@ def read_session(path):
             if d.get("type") == "last-prompt" and d.get("lastPrompt"):
                 s["title"] = d["lastPrompt"]; break
     if s["title"] is None or s["cwd"] is None:
-        for d in lines_of(path, 0, HEAD):
+        try: head = lines_of(path, 0, HEAD)
+        except OSError: head = []
+        for d in head:
             if s["cwd"] is None and d.get("cwd"): s["cwd"] = d["cwd"]
             if s["title"] is None and d.get("type") == "user" and not d.get("isMeta"):
                 txt = text_of(d.get("message")).strip()
@@ -111,12 +127,19 @@ def open_processes():
     return out
 
 
-def window_for(model, tokens, self_model, self_window):
-    if model and "[1m]" in model: return 1_000_000
-    if model and model == self_model and self_window: w = self_window
-    else: w = 200_000
-    if tokens and tokens > w: w = 1_000_000
-    return w
+def window_for(model, tokens, learned, self_model, self_window):
+    """(window, known): known is False only when we fell back to the 200k guess."""
+    if model and "[1m]" in model: return 1_000_000, True
+    if model and model in learned: w, known = learned[model], True
+    elif model and model == self_model and self_window: w, known = self_window, True
+    else: w, known = 200_000, False
+    if tokens and tokens > w: w, known = 1_000_000, True
+    return w, known
+
+
+def transcript_id(f):
+    stem = f[:-6] if f.endswith(".jsonl") else ""
+    return stem if UUID_RE.match(stem) else None
 
 
 def snapshot(a):
@@ -131,7 +154,7 @@ def snapshot(a):
         pdir = os.path.join(ROOT, d)
         files = []
         for f in os.listdir(pdir):
-            if f.endswith(".jsonl"):
+            if transcript_id(f):
                 p = os.path.join(pdir, f)
                 try: files.append((os.path.getmtime(p), f[:-6], p))
                 except OSError: pass
@@ -140,13 +163,18 @@ def snapshot(a):
         projects.append({"dir": d, "files": files})
         for _, sid, p in files:
             if sid == a["self"]:
-                cache[sid] = read_session(p); self_model = cache[sid]["model"]
+                cache[sid] = read_session(p)
+                if cache[sid]: self_model = cache[sid]["model"]
 
     result = []
     for pr in projects:
         files = pr["files"]
-        newest = cache.get(files[0][1]) or read_session(files[0][2])
-        cache[files[0][1]] = newest
+        newest = None
+        for _, sid, p in files:
+            newest = cache.get(sid) or read_session(p)
+            if newest: cache[sid] = newest; break
+        if not newest: continue
+        path_known = bool(newest["cwd"])
         path = newest["cwd"] or "/" + pr["dir"].lstrip("-").replace("-", "/")
         # sessions opened without --resume: the newest transcript in that cwd written since the process started
         cwd_open = {}
@@ -158,34 +186,47 @@ def snapshot(a):
         sessions = []
         for mt, sid, p in picked:
             s = cache.get(sid) or read_session(p)
-            w = window_for(s["model"], s["tokens"], self_model, a["window"])
+            if not s: continue
+            w, known = window_for(s["model"], s["tokens"], a["windows"], self_model, a["window"])
             sessions.append({
                 "id": sid, "title": s["title"] or "(untitled)", "cwd": s["cwd"] or path,
-                "tokens": s["tokens"], "window": w, "model": s["model"],
+                "tokens": s["tokens"], "window": w, "windowKnown": known, "model": s["model"],
                 "mtimeMs": int(mt * 1000), "isOpen": sid in open_ids or sid in cwd_open or sid == a["self"],
                 "isSelf": sid == a["self"],
                 "inDesktop": open_ids.get(sid, cwd_open.get(sid, False)),
             })
         result.append({
-            "dir": pr["dir"], "name": os.path.basename(path.rstrip("/")) or path, "path": path,
+            "dir": pr["dir"], "name": os.path.basename(path.rstrip("/")) or path, "path": path, "pathKnown": path_known,
             "total": len(files), "mtimeMs": int(files[0][0] * 1000), "sessions": sessions,
         })
+    names = [r["name"] for r in result]
+    for r in result:
+        if names.count(r["name"]) > 1:
+            r["name"] = (os.path.basename(os.path.dirname(r["path"].rstrip("/"))) or "") + "/" + r["name"]
     result.sort(key=lambda r: r["mtimeMs"], reverse=True)
-    return {"at": int(time.time() * 1000), "projects": result}
+    windows = dict(a["windows"])
+    if self_model and a["window"]: windows[self_model] = a["window"]
+    return {"at": int(time.time() * 1000), "projects": result, "windows": windows}
+
+
+def out(obj):
+    sys.stdout.write(json.dumps(obj, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
 
 
 def emit(a):
-    sys.stdout.write(json.dumps(snapshot(a), separators=(",", ":")) + "\n")
-    sys.stdout.flush()
+    try: out(snapshot(a))
+    except Exception as e: out({"error": "scan failed: %s" % (str(e) or type(e).__name__)[:200]})
 
 
 def mtimes():
     m = {}
+    if not os.path.isdir(ROOT): return m
     for d in os.listdir(ROOT):
         pdir = os.path.join(ROOT, d)
         if not os.path.isdir(pdir): continue
         for f in os.listdir(pdir):
-            if f.endswith(".jsonl"):
+            if transcript_id(f):
                 p = os.path.join(pdir, f)
                 try: m[p] = os.path.getmtime(p)
                 except OSError: pass
@@ -194,19 +235,24 @@ def mtimes():
 
 def watch(a):
     emit(a)
-    seen, opened, last_proc = mtimes(), None, 0
+    try: seen = mtimes()
+    except Exception: seen = {}
+    opened, last_proc = None, 0
     while True:
         time.sleep(1.5)
-        now = mtimes()
-        changed = [p for p, t in now.items() if seen.get(p) != t]
-        seen = now
-        fire = any(read_session(p)["ended"] for p in changed if os.path.exists(p))
-        if time.time() - last_proc > 15:  # open/closed sessions, checked less often
-            last_proc = time.time()
-            ids = sorted((p[0] or "", p[1] or "") for p in open_processes())
-            if opened is not None and ids != opened: fire = True
-            opened = ids
-        if fire: emit(a)
+        try:
+            now = mtimes()
+            changed = [p for p, t in now.items() if seen.get(p) != t]
+            seen = now
+            fire = any((read_session(p) or {}).get("ended") for p in changed)
+            if time.time() - last_proc > 15:  # open/closed sessions, checked less often
+                last_proc = time.time()
+                ids = sorted((p[0] or "", p[1] or "") for p in open_processes())
+                if opened is not None and ids != opened: fire = True
+                opened = ids
+            if fire: emit(a)
+        except Exception as e:
+            out({"error": "watch failed: %s" % (str(e) or type(e).__name__)[:200]})
 
 
 if __name__ == "__main__":

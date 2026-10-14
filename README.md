@@ -14,15 +14,13 @@ When you run Claude Code in several repos at once, sessions are hard to keep tra
 
 ## Quick start
 
-```bash
-git clone https://github.com/martinindalecio/project-switcher ~/claude/claudemods/project-switcher
+In a Claude Code terminal session, type:
+
+```
+/plugin install project-switcher --marketplace martinindalecio/project-switcher
 ```
 
-```bash
-claude --plugin-dir ~/claude/claudemods/project-switcher
-```
-
-Then type `/projects`. To load it in every session, see [Install](#install).
+Answer `y` to add the marketplace and press Enter for the user scope. Then type `/projects`, or press `p` on the `▤ Projects` launcher.
 
 ## What you get
 
@@ -54,27 +52,21 @@ Projects
 
 - macOS. It uses `ps`, `lsof`, `open` and `osascript`.
 - `python3` on your `PATH`.
-- Claude Code with plugin hooks, version 2.1.286 or later.
+- Claude Code with plugin hooks. Tested with version 2.1.295.
 
 ## Install
 
-```bash
-git clone https://github.com/martinindalecio/project-switcher ~/claude/claudemods/project-switcher
+```
+/plugin install project-switcher --marketplace martinindalecio/project-switcher
 ```
 
-To load it in every session, add this to `~/.claude/settings.json`:
+The command runs in a terminal session. Installed at the user scope, the plugin also loads in the Claude Desktop Code tab. Start a **new** Desktop session after installing or updating.
 
-```json
-{ "env": { "CLAUDE_CODE_PLUGIN_DIRS": "~/claude/claudemods/project-switcher" } }
+## Uninstall
+
 ```
-
-To try it in a single session:
-
-```bash
-claude --plugin-dir ~/claude/claudemods/project-switcher
+/plugin uninstall project-switcher
 ```
-
-Start a **new** session after installing or updating. Desktop sessions do not reload plugin code that changes underneath them.
 
 ## Use
 
@@ -82,7 +74,7 @@ Click **▤ Projects** above the prompt, or type `/projects`, to open the pane a
 
 The pane follows you: once you open it, every other session you start or switch to in Claude Desktop opens it too. It stops when you close it by hand. The `▤ Projects` launcher shows only while the pane is closed.
 
-- Click a project name to fold it or unfold it.
+- Click a project name to fold it or unfold it. When two projects share a folder name, the parent folder is shown too (`work/app`).
 - `+N more` shows the rest of that project's recent sessions.
 - `↻` rescans now.
 - `⚙` shows the settings.
@@ -96,6 +88,27 @@ What a click on a session does:
 | running in a terminal | refused with a toast, so it doesn't get a second writer | refused with a toast |
 
 Opening in Desktop uses the app's `claude://resume?session=<id>` link. The session then shows up in Desktop's sidebar.
+
+## Keyboard shortcuts
+
+| Key | Where | Does |
+| --- | --- | --- |
+| `p` | launcher above the prompt | opens the pane |
+| `1`–`9` | pane | resumes the first nine sessions you can open |
+| `r` | pane | rescans now |
+| `s` | pane | shows or hides the settings |
+
+Keys work while the launcher or the pane has focus.
+
+## What you'll see in special cases
+
+- **No sessions yet:** a short note explaining that sessions appear once you start Claude Code in any folder.
+- **Not on macOS:** "Project switcher works on macOS for now." Nothing is scanned.
+- **No python3:** a note to install the Xcode Command Line Tools (`xcode-select --install`).
+- **A scan error:** a plain sentence, the raw error dimmed below it, and `r` to retry.
+- **`~62%`:** an estimate. The model's context window wasn't known, so 200k was assumed. Once any of your sessions reports the window, it is remembered and the `~` goes away.
+- **`path guessed`:** the transcript had no working folder, so the path was rebuilt from the folder name and may be wrong when it contains dashes.
+- The launcher hides when the pane is open, or when no other session is open and none is near its limit.
 
 ## Settings
 
@@ -122,8 +135,17 @@ The values are stored in `~/.claude/settings.json` under `pluginConfigs`.
 | `bin/scan.py` | Reads transcript heads and tails for title and token usage, and matches running `claude` processes. `once` prints one snapshot; `watch` prints a new one whenever a session's turn ends. |
 | `types/index.d.ts` | Types for the plugin's state |
 | `tests/pane.test.tsx` | Mount tests on the terminal and desktop surfaces |
+| `tests/test_scan.py` | Scanner unit tests on sample transcripts |
 
-Context fill is the last assistant message's input and cache tokens divided by the model's window. The window is 1M for `[1m]` models or anything over 200k, and 200k otherwise.
+Context fill is the last assistant message's input and cache tokens divided by the model's window. The window is 1M for `[1m]` models; otherwise it is the window learned from your own sessions (kept across sessions); otherwise 200k, shown as an estimate with `~`. Anything over 200k is treated as 1M.
+
+The background scanner (`scan.py watch`) runs only while the pane is open. Otherwise the launcher's counts come from a single scan when a session starts and after each turn, at most once every 30 seconds. Only transcripts named with a session UUID are read, and a session id is checked again before it is used in a command.
+
+## Known limitations
+
+- macOS only.
+- In Claude Desktop the pane reopens when you switch sessions only if the app raises the session-attach event on each switch. If it doesn't appear, type `/projects` or press `p`.
+- Context windows are learned best-effort. Models none of your sessions has reported keep the `~` marker.
 
 ## Troubleshooting
 
@@ -139,6 +161,16 @@ claude plugin validate .
 
 ```bash
 claude plugin test .
+```
+
+```bash
+python3 -m unittest tests/test_scan.py
+```
+
+To run your local copy instead of the installed one:
+
+```bash
+claude --plugin-dir .
 ```
 
 Issues and pull requests are welcome. Linux support (it needs `/proc` instead of `lsof`, and another way to open a terminal) would be a good first contribution.

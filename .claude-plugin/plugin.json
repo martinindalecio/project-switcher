@@ -1,6 +1,6 @@
 {
   "name": "project-switcher",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Pane listing every project and its sessions with context-window fill; resume any session in Claude Desktop, Terminal or iTerm",
   "author": {
     "name": "Martin Galaz"

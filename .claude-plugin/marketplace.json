@@ -1,0 +1,13 @@
+{
+  "name": "project-switcher",
+  "owner": {
+    "name": "Martin Galaz"
+  },
+  "description": "See every Claude Code session by project, with context fill, and resume any of them.",
+  "plugins": [
+    {
+      "name": "project-switcher",
+      "source": "./"
+    }
+  ]
+}

@@ -1,8 +1,10 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 const now = Date.now()
-const row = (id: string, tokens: number | null, isOpen = false) => ({
-  id, title: `Session ${id} with a fairly long title to clip`, cwd: '/tmp', tokens, window: 200_000,
+// a session id as the scanner emits it: a UUID; the tag (hex) makes it readable in a key
+const uid = (tag: string) => `00000000-0000-4000-8000-${tag.padStart(12, '0')}`
+const row = (tag: string, tokens: number | null, isOpen = false) => ({
+  id: uid(tag), title: `Session ${tag} with a fairly long title to clip`, cwd: '/tmp', tokens, window: 200_000,
   model: 'claude-opus-5-5', mtimeMs: now - 3_600_000, isOpen, isSelf: false, inDesktop: false,
 })
 const SNAP = {
@@ -22,14 +24,14 @@ test('pane draws and toggles on terminal and desktop', async ($, on) => {
       plugin: 'project-switcher', surface, component: 'Pane', requestId: 'project-switcher',
       props: { title: 'Projects', isFocused: false, bodyColumns: 50, placement: 'dock' } as never,
     })
-    expect((await ui.find({ key: 'o-0a' }))).toBeDefined()        // open-now row
-    expect((await ui.find({ key: 'p-0c' }))).toBeUndefined()      // no usage: hidden
+    expect((await ui.find({ key: `o-${uid('0a')}` }))).toBeDefined()        // open-now row
+    expect((await ui.find({ key: `p-${uid('0c')}` }))).toBeUndefined()      // no usage: hidden
     expect((await ui.find({ key: 'm-d0' }))?.props.label).toBe('+1 more')
     expect((await ui.find({ key: 'more-projects' }))?.props.label).toBe('Show 2 more projects')
     // proj5 starts collapsed; one press expands it
-    expect(await ui.find({ key: 'p-5a' })).toBeUndefined()
+    expect(await ui.find({ key: `p-${uid('5a')}` })).toBeUndefined()
     await ui.press({ key: 't-d5' })
-    expect(await ui.find({ key: 'p-5a' })).toBeDefined()
+    expect(await ui.find({ key: `p-${uid('5a')}` })).toBeDefined()
     await ui.press({ key: 't-d5' })
     await ui.press({ key: 'more-projects' })
     expect(await ui.find({ key: 't-d9' })).toBeDefined()
@@ -61,10 +63,10 @@ test('pressing a session opens it where the setting says', async ($, on) => {
     plugin: 'project-switcher', surface: 'desktop', component: 'Pane', requestId: 'project-switcher',
     props: { title: 'Projects', isFocused: false, bodyColumns: 50, placement: 'dock' } as never,
   })
-  await ui.press({ key: 'pr-0b' })
-  expect(ran.at(-1)).toEqual(['open', 'claude://resume?session=0b'])
+  await ui.press({ key: `pr-${uid('0b')}` })
+  expect(ran.at(-1)).toEqual(['open', `claude://resume?session=${uid('0b')}`])
   ran.length = 0
-  await ui.press({ key: 'or-0a' })   // open in a terminal: refused, nothing runs
+  await ui.press({ key: `or-${uid('0a')}` })   // open in a terminal: refused, nothing runs
   expect(ran.length).toBe(0)
   await ui.unmount()
 })
@@ -78,9 +80,9 @@ test('openIn terminal resumes with claude --resume in Terminal', { options: { op
     plugin: 'project-switcher', surface: 'terminal', component: 'Pane', requestId: 'project-switcher',
     props: { title: 'Projects', isFocused: false, bodyColumns: 50, placement: 'dock' } as never,
   })
-  await ui.press({ key: 'pr-1b' })
+  await ui.press({ key: `pr-${uid('1b')}` })
   expect(ran.at(-1)?.[0]).toBe('osascript')
-  expect(ran.at(-1)?.[2]).toBe(`tell application "Terminal" to do script "cd '/tmp' && claude --resume 1b"`)
+  expect(ran.at(-1)?.[2]).toBe(`tell application "Terminal" to do script "cd '/tmp' && claude --resume ${uid('1b')}"`)
   await ui.unmount()
 })
 
@@ -120,7 +122,7 @@ const mountLauncher = ($: any, surface: 'terminal' | 'desktop') =>
   })
 
 // stands for the engine's store and state: store.get/set go to a map, state.get answers paneUp
-function stubEngine(on: any, opts: { wanted?: unknown } = {}) {
+function stubEngine(on: any, opts: { wanted?: unknown; snapshot?: unknown } = {}) {
   const store = new Map<string, unknown>()
   if (opts.wanted !== undefined) store.set('paneWanted', opts.wanted)
   const opened: unknown[] = []
@@ -133,7 +135,13 @@ function stubEngine(on: any, opts: { wanted?: unknown } = {}) {
   on('session.usage', async () => ({ value: { context: { window: 200_000 } } as never }))
   on('session.id', async () => ({ value: 'test-session' }))
   on('command.register', async () => ({ value: undefined }))
-  on('process.run', async () => ({ value: { exitCode: 0, stdout: JSON.stringify(SNAP), stderr: '' } }))
+  // the preflight finds macOS with python3; a scan answers with SNAP
+  const ran: string[][] = []
+  on('process.run', async (_$: any, e: any) => {
+    ran.push([...e.argv])
+    const stdout = e.argv[0] === 'uname' ? 'Darwin\n' : e.argv[0] === 'python3' ? JSON.stringify(SNAP) : ''
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
   // the engine's record of panes: an open places it, a close takes it away
   const panes = new Map<string, unknown>()
   on('ui.panes', async () => ({ value: [...panes.values()] }))
@@ -147,10 +155,10 @@ function stubEngine(on: any, opts: { wanted?: unknown } = {}) {
   on('ui.render', async () => ({ type: 'Text', props: {}, children: ['stock'] } as never))
   on('state.get', async (_$: any, e: any, next: any) => {
     if (e.plugin !== 'project-switcher') return next(e)
-    if (e.key === 'snapshot') return { value: { value: SNAP, version: 1 } }
+    if (e.key === 'snapshot') return { value: { value: opts.snapshot ?? SNAP, version: 1 } }
     return next(e)
   })
-  return { store, opened, closed, panes }
+  return { store, opened, closed, panes, ran }
 }
 
 for (const surface of SURFACES) {
@@ -219,4 +227,148 @@ for (const wanted of [false, undefined]) {
     expect(opened.length).toBe(0)
   })
 }
+
+
+// ---- states, safety and the watcher's lifecycle ----
+
+const mountPane = ($: any, surface: 'terminal' | 'desktop') =>
+  $.ui.mount({
+    plugin: 'project-switcher', surface, component: 'Pane', requestId: 'project-switcher',
+    props: { title: 'Projects', isFocused: false, bodyColumns: 50, placement: 'dock' } as never,
+  })
+
+// answers the plugin's state reads from a fixed map; anything else falls to the kit's own state
+function stubState(on: any, values: Record<string, unknown>) {
+  on('state.get', async (_$: any, e: any, next: any) =>
+    e.plugin === 'project-switcher' && e.key in values ? { value: { value: values[e.key], version: 1 } } : next(e))
+}
+
+for (const surface of SURFACES) {
+  test(`no sessions draws the empty state (${surface})`, async ($, on) => {
+    stubState(on, { snapshot: { at: now, projects: [] } })
+    const ui = await mountPane($, surface)
+    // the kit keeps keys on Buttons only, so Text is found by what it says
+    expect(await ui.find({ text: /^No sessions yet/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test(`an unsupported platform says so (${surface})`, async ($, on) => {
+    stubState(on, { env: 'unsupported', snapshot: SNAP })
+    const ui = await mountPane($, surface)
+    expect(await ui.find({ key: 'refresh' })).toBeUndefined()
+    expect(await ui.find({ text: 'Project switcher works on macOS for now.' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test(`a missing python3 says how to get it (${surface})`, async ($, on) => {
+    stubState(on, { env: 'no-python', snapshot: SNAP })
+    const ui = await mountPane($, surface)
+    expect(await ui.find({ text: /Needs python3 .*xcode-select --install/ })).toBeDefined()
+    expect(await ui.find({ key: 'refresh' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test(`a guessed window is marked ~ (${surface})`, async ($, on) => {
+    const est = { ...row('fa', 150_000), windowKnown: false }
+    const known = { ...row('fb', 150_000), windowKnown: true }
+    stubState(on, { snapshot: { at: now, projects: [{ dir: 'dx', name: 'x', path: '/tmp/x', pathKnown: false, total: 2, mtimeMs: now, sessions: [est, known] }] } })
+    const ui = await mountPane($, surface)
+    const pcts = (await ui.findAll({ type: 'Text', text: /%$/ })).map((t: any) => t.text)
+    expect(pcts).toEqual(['  ~75%', '   75%'])
+    expect(await ui.find({ text: ' · path guessed' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test(`the launcher hides when nothing else is open (${surface})`, async ($, on) => {
+    const quiet = { at: now, projects: [{ ...SNAP.projects[1]!, sessions: [row('aa', 190_000)] }] }
+    stubEngine(on, { snapshot: quiet })
+    const ui = await mountLauncher($, surface)
+    expect(await ui.find({ key: 'launch' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test(`the launcher has hotkey p and counts what is open (${surface})`, async ($, on) => {
+    stubEngine(on)
+    const ui = await mountLauncher($, surface)
+    const launch = await ui.find({ key: 'launch' })
+    expect(launch?.props.hotkey).toBe('p')
+    expect(await ui.find({ text: ' 1' })).toBeDefined()
+    expect(await ui.find({ text: ' · 1 near limit' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  for (const openIn of ['desktop', 'terminal', 'iterm'] as const) {
+    test(`an id that is no UUID launches nothing (${surface}, ${openIn})`, { options: { openIn } }, async ($, on) => {
+      const ran: string[][] = []
+      on('process.run', async (_$: any, e: any) => { ran.push([...e.argv]); return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } } })
+      const toasts: string[] = []
+      on('ui.toast', async (_$: any, e: any) => { toasts.push(e.text); return { value: undefined } })
+      const bad = { ...row('ab', 10_000), id: `x'; touch /tmp/pwned; '` }
+      stubState(on, { snapshot: { at: now, projects: [{ dir: 'dz', name: 'z', path: '/tmp/z', total: 1, mtimeMs: now, sessions: [bad] }] } })
+      const ui = await mountPane($, surface)
+      await ui.press({ key: `pr-${bad.id}` })
+      await ui.unmount()
+      expect(ran.length).toBe(0)
+      expect(toasts.at(-1)).toContain("Can't resume")
+    })
+  }
+}
+
+test('hotkeys: r rescans, s settings, digits on resumable rows only', async ($, on) => {
+  stubState(on, { snapshot: SNAP })
+  const ui = await mountPane($, 'desktop')
+  expect((await ui.find({ key: 'refresh' }))?.props.hotkey).toBe('r')
+  expect((await ui.find({ key: 'settings' }))?.props.hotkey).toBe('s')
+  // 0a is open in a terminal: no digit; 0b is the first resumable row
+  expect((await ui.find({ key: `or-${uid('0a')}` }))?.props.hotkey).toBeUndefined()
+  expect((await ui.find({ key: `pr-${uid('0b')}` }))?.props.hotkey).toBe('1')
+  const digits = (await ui.findAll({ type: 'Button' })).map((b: any) => b.props.hotkey).filter((h: any) => typeof h === 'string' && /^\d$/.test(h))
+  // numbered in drawing order, gap-free, at most nine (here the expanded projects hold eight)
+  expect(digits).toEqual(digits.map((_: unknown, i: number) => String(i + 1)))
+  expect(digits.length).toBeGreaterThan(1)
+  expect(digits.length).toBeLessThanOrEqual(9)
+  await ui.unmount()
+})
+
+// stands for `scan.py watch`: one snapshot, then a blank line each mocked second until the plugin ends the loop.
+// It waits on the mocked clock, which the kit's acts don't wait for, so a press that starts it returns.
+function stubWatch(on: any, clock: { sleep: (ms: number) => Promise<void> }) {
+  const spawned: string[][] = []
+  const live = { count: 0 }
+  on('process.spawn', async function* (_$: any, e: any) {
+    spawned.push([...e.argv])
+    live.count++
+    try {
+      yield { stream: 'stdout', text: JSON.stringify(SNAP) + '\n' }
+      for (;;) {
+        await clock.sleep(1_000)
+        yield { stream: 'stdout', text: '\n' }
+      }
+      return { code: 0, signal: null }
+    } finally {
+      live.count--
+    }
+  })
+  return { spawned, live }
+}
+
+test('the watcher runs only while the pane is up', async ($, on) => {
+  const { ran } = stubEngine(on)
+  const clock = mock.clock(on, { now })
+  const { spawned, live } = stubWatch(on, clock)
+  // a session start scans once for the band; it starts no watcher
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as never)
+  await settle()
+  expect(spawned.length).toBe(0)
+  expect(ran.some(a => a[0] === 'python3' && a.includes('once'))).toBe(true)
+  // opening the pane starts it
+  const band = await mountLauncher($, 'desktop')
+  await band.press({ key: 'launch' })
+  await band.unmount()
+  await settle()
+  expect(spawned.length).toBe(1)
+  expect(spawned[0]).toContain('watch')
+  expect(live.count).toBe(1)
+  // stopping on close needs a live check: the test kit cannot raise ui.close
+})
 
